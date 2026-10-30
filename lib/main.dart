@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: 'https://uyznaqoohrvbbqpxiscx.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV5em5hcW9vaHJ2YmJxcHhpc2N4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2NTM1OTAsImV4cCI6MjEwNzIyOTU5MH0.Awo6bckTXHAFIVoRqZYF-cJR0tqd9xrascAznXvStT8',
+  );
   runApp(const ToudiDriverApp());
 }
 
@@ -18,7 +24,7 @@ class ToudiDriverApp extends StatelessWidget {
   }
 }
 
-// ================= D-01: DRIVER LOGIN SCREEN =================
+// ================= D-01: DRIVER LOGIN SCREEN (Real Database) =================
 class DriverLoginScreen extends StatefulWidget {
   const DriverLoginScreen({super.key});
   @override
@@ -27,10 +33,59 @@ class DriverLoginScreen extends StatefulWidget {
 
 class _DriverLoginScreenState extends State<DriverLoginScreen> {
   final TextEditingController _phoneController = TextEditingController();
+  bool _isLoading = false;
 
-  void _login() {
+  void _login() async {
     if (_phoneController.text.length == 10) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const DriverMainScreen()));
+      setState(() => _isLoading = true);
+      
+      try {
+        // Database mein check karo ki driver exist karta hai ya nahi
+        final response = await Supabase.instance.client
+            .from('users')
+            .select('*, drivers(*)')
+            .eq('phone', _phoneController.text)
+            .maybeSingle();
+
+        if (response != null) {
+          // Agar driver mil gaya, toh Dashboard par bhejo
+          if (mounted) {
+            Navigator.pushReplacement(context, MaterialPageRoute(
+              builder: (context) => DriverMainScreen(driverData: response)
+            ));
+          }
+        } else {
+          // Agar naya driver hai, toh temporary database mein add karo (Testing ke liye)
+          final newUser = await Supabase.instance.client.from('users').insert({
+            'phone': _phoneController.text,
+            'name': 'Driver ${_phoneController.text.substring(6)}',
+            'role': 'driver',
+          }).select().single();
+          
+          await Supabase.instance.client.from('drivers').insert({
+            'user_id': newUser['id'],
+            'vehicle_type': 'Tata Ace',
+            'vehicle_number': 'UP 32 XX 0000',
+            'kyc_status': 'approved',
+            'duty_status': 'offline',
+          });
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Naya Driver Account Ban Gaya!'), backgroundColor: Colors.green),
+            );
+            _login(); // Dobara fetch karo
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('10 digit ka mobile number daalo!')),
@@ -66,13 +121,15 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
               ),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: _login,
+                onPressed: _isLoading ? null : _login,
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 15),
                   backgroundColor: Colors.green,
                   foregroundColor: Colors.white,
                 ),
-                child: const Text('Login / Register', style: TextStyle(fontSize: 18)),
+                child: _isLoading 
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : const Text('Login / Register', style: TextStyle(fontSize: 18)),
               ),
             ],
           ),
@@ -84,7 +141,8 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
 
 // ================= BOTTOM NAVIGATION CONTROLLER =================
 class DriverMainScreen extends StatefulWidget {
-  const DriverMainScreen({super.key});
+  final Map<String, dynamic> driverData;
+  const DriverMainScreen({super.key, required this.driverData});
   @override
   State<DriverMainScreen> createState() => _DriverMainScreenState();
 }
@@ -92,12 +150,18 @@ class DriverMainScreen extends StatefulWidget {
 class _DriverMainScreenState extends State<DriverMainScreen> {
   int _currentIndex = 0;
 
-  final List<Widget> _tabs = [
-    const DriverDashboardTab(),
-    const DriverTripsTab(),
-    const DriverEarningsTab(),
-    const DriverProfileTab(),
-  ];
+  late List<Widget> _tabs;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs = [
+      DriverDashboardTab(driverData: widget.driverData),
+      const DriverTripsTab(),
+      const DriverEarningsTab(),
+      DriverProfileTab(driverData: widget.driverData),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -120,18 +184,53 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
   }
 }
 
-// ================= D-05 & D-06: DASHBOARD TAB =================
+// ================= D-05 & D-06: DASHBOARD TAB (Real Database Update) =================
 class DriverDashboardTab extends StatefulWidget {
-  const DriverDashboardTab({super.key});
+  final Map<String, dynamic> driverData;
+  const DriverDashboardTab({super.key, required this.driverData});
   @override
   State<DriverDashboardTab> createState() => _DriverDashboardTabState();
 }
 
 class _DriverDashboardTabState extends State<DriverDashboardTab> {
   bool _isOnline = false;
+  bool _isUpdating = false;
+  String _driverId = '';
 
-  void _toggleStatus(bool value) {
-    setState(() => _isOnline = value);
+  @override
+  void initState() {
+    super.initState();
+    _driverId = widget.driverData['drivers'][0]['id'];
+    _isOnline = widget.driverData['drivers'][0]['duty_status'] == 'online';
+  }
+
+  void _toggleStatus(bool value) async {
+    setState(() => _isUpdating = true);
+    try {
+      await Supabase.instance.client.from('drivers').update({
+        'duty_status': value ? 'online' : 'offline'
+      }).eq('id', _driverId);
+      
+      setState(() => _isOnline = value);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(value ? 'Aap Online ho gaye hain!' : 'Aap Offline ho gaye hain.'),
+            backgroundColor: value ? Colors.green : Colors.red,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      setState(() => _isUpdating = false);
+    }
   }
 
   @override
@@ -173,7 +272,9 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                       Text(_isOnline ? 'Waiting for requests...' : 'Go online to get rides', style: const TextStyle(fontSize: 14, color: Colors.grey)),
                     ],
                   ),
-                  Switch(value: _isOnline, onChanged: _toggleStatus, activeColor: Colors.green),
+                  _isUpdating 
+                    ? const CircularProgressIndicator(color: Colors.green)
+                    : Switch(value: _isOnline, onChanged: _toggleStatus, activeColor: Colors.green),
                 ],
               ),
             ),
@@ -414,21 +515,25 @@ class DriverEarningsTab extends StatelessWidget {
 }
 
 class DriverProfileTab extends StatelessWidget {
-  const DriverProfileTab({super.key});
+  final Map<String, dynamic> driverData;
+  const DriverProfileTab({super.key, required this.driverData});
+
   @override
   Widget build(BuildContext context) {
+    final driverInfo = driverData['drivers'][0];
+    
     return Scaffold(
       appBar: AppBar(title: const Text('Driver Profile'), backgroundColor: Colors.green, foregroundColor: Colors.white),
       body: ListView(
         children: [
           const SizedBox(height: 20),
-          const Center(
-            child: Column(
+          Center(
+                        child: Column(
               children: [
-                CircleAvatar(radius: 50, child: Icon(Icons.person, size: 50)),
-                SizedBox(height: 10),
-                Text('Ramesh Kumar', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                Text('Tata Ace - UP 32 AB 1234', style: TextStyle(color: Colors.grey)),
+                const CircleAvatar(radius: 50, child: Icon(Icons.person, size: 50)),
+                const SizedBox(height: 10),
+                Text(driverData['name'] ?? 'Driver Name', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                Text('${driverInfo['vehicle_type']} - ${driverInfo['vehicle_number']}', style: const TextStyle(color: Colors.grey)),
               ],
             ),
           ),
@@ -441,3 +546,4 @@ class DriverProfileTab extends StatelessWidget {
     );
   }
 }
+         
