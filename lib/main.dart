@@ -24,7 +24,7 @@ class ToudiDriverApp extends StatelessWidget {
   }
 }
 
-// ================= D-01: DRIVER LOGIN SCREEN (Real Database) =================
+// ================= D-01: DRIVER LOGIN SCREEN =================
 class DriverLoginScreen extends StatefulWidget {
   const DriverLoginScreen({super.key});
   @override
@@ -38,9 +38,7 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
   void _login() async {
     if (_phoneController.text.length == 10) {
       setState(() => _isLoading = true);
-      
       try {
-        // Database mein check karo ki driver exist karta hai ya nahi
         final response = await Supabase.instance.client
             .from('users')
             .select('*, drivers(*)')
@@ -48,14 +46,12 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
             .maybeSingle();
 
         if (response != null) {
-          // Agar driver mil gaya, toh Dashboard par bhejo
           if (mounted) {
             Navigator.pushReplacement(context, MaterialPageRoute(
               builder: (context) => DriverMainScreen(driverData: response)
             ));
           }
         } else {
-          // Agar naya driver hai, toh temporary database mein add karo (Testing ke liye)
           final newUser = await Supabase.instance.client.from('users').insert({
             'phone': _phoneController.text,
             'name': 'Driver ${_phoneController.text.substring(6)}',
@@ -68,13 +64,15 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
             'vehicle_number': 'UP 32 XX 0000',
             'kyc_status': 'approved',
             'duty_status': 'offline',
+            'total_earnings': 0,
+            'completed_trips': 0,
           });
 
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Naya Driver Account Ban Gaya!'), backgroundColor: Colors.green),
             );
-            _login(); // Dobara fetch karo
+            _login();
           }
         }
       } catch (e) {
@@ -149,18 +147,21 @@ class DriverMainScreen extends StatefulWidget {
 
 class _DriverMainScreenState extends State<DriverMainScreen> {
   int _currentIndex = 0;
-
   late List<Widget> _tabs;
 
   @override
   void initState() {
     super.initState();
     _tabs = [
-      DriverDashboardTab(driverData: widget.driverData),
+      DriverDashboardTab(driverData: widget.driverData, onRefresh: _refreshData),
       const DriverTripsTab(),
       const DriverEarningsTab(),
       DriverProfileTab(driverData: widget.driverData),
     ];
+  }
+
+  void _refreshData() {
+    setState(() {}); // Refresh UI
   }
 
   @override
@@ -184,10 +185,11 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
   }
 }
 
-// ================= D-05 & D-06: DASHBOARD TAB (Real Database Update) =================
+// ================= D-05 & D-06: DASHBOARD TAB =================
 class DriverDashboardTab extends StatefulWidget {
   final Map<String, dynamic> driverData;
-  const DriverDashboardTab({super.key, required this.driverData});
+  final VoidCallback onRefresh;
+  const DriverDashboardTab({super.key, required this.driverData, required this.onRefresh});
   @override
   State<DriverDashboardTab> createState() => _DriverDashboardTabState();
 }
@@ -196,12 +198,16 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
   bool _isOnline = false;
   bool _isUpdating = false;
   String _driverId = '';
+  double _earnings = 0;
+  int _trips = 0;
 
   @override
   void initState() {
     super.initState();
     _driverId = widget.driverData['drivers'][0]['id'];
     _isOnline = widget.driverData['drivers'][0]['duty_status'] == 'online';
+    _earnings = (widget.driverData['drivers'][0]['total_earnings'] ?? 0).toDouble();
+    _trips = widget.driverData['drivers'][0]['completed_trips'] ?? 0;
   }
 
   void _toggleStatus(bool value) async {
@@ -281,16 +287,22 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
             const SizedBox(height: 20),
             Row(
               children: [
-                Expanded(child: _buildStatCard('Today\'s Earnings', '₹0', Icons.currency_rupee, Colors.blue)),
+                Expanded(child: _buildStatCard('Total Earnings', '₹$_earnings', Icons.currency_rupee, Colors.blue)),
                 const SizedBox(width: 15),
-                Expanded(child: _buildStatCard('Today\'s Trips', '0', Icons.local_shipping, Colors.orange)),
+                Expanded(child: _buildStatCard('Total Trips', '$_trips', Icons.local_shipping, Colors.orange)),
               ],
             ),
             const Spacer(),
             if (_isOnline)
               ElevatedButton(
-                onPressed: () {
-                  Navigator.push(context, MaterialPageRoute(builder: (context) => const RideRequestScreen()));
+                onPressed: () async {
+                  await Navigator.push(context, MaterialPageRoute(builder: (context) => RideRequestScreen(driverId: _driverId)));
+                  // Jab trip complete hoke wapas aaye, toh dashboard refresh karo
+                  final updatedDriver = await Supabase.instance.client.from('drivers').select().eq('id', _driverId).single();
+                  setState(() {
+                    _earnings = (updatedDriver['total_earnings'] ?? 0).toDouble();
+                    _trips = updatedDriver['completed_trips'] ?? 0;
+                  });
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green,
@@ -324,7 +336,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
 
 // ================= D-07: RIDE REQUEST SCREEN =================
 class RideRequestScreen extends StatelessWidget {
-  const RideRequestScreen({super.key});
+  final String driverId;
+  const RideRequestScreen({super.key, required this.driverId});
 
   @override
   Widget build(BuildContext context) {
@@ -365,7 +378,7 @@ class RideRequestScreen extends StatelessWidget {
                   Expanded(
                     child: ElevatedButton(
                       onPressed: () {
-                        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const ActiveTripScreen()));
+                        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => ActiveTripScreen(driverId: driverId)));
                       },
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.green, minimumSize: const Size(0, 50)),
                       child: const Text('Accept', style: TextStyle(color: Colors.white)),
@@ -399,14 +412,16 @@ class RideRequestScreen extends StatelessWidget {
 
 // ================= D-08, D-09, D-10: ACTIVE TRIP SCREEN =================
 class ActiveTripScreen extends StatefulWidget {
-  const ActiveTripScreen({super.key});
+  final String driverId;
+  const ActiveTripScreen({super.key, required this.driverId});
   @override
   State<ActiveTripScreen> createState() => _ActiveTripScreenState();
 }
 
 class _ActiveTripScreenState extends State<ActiveTripScreen> {
-  int _tripStatus = 0; // 0: Going to Pickup, 1: At Pickup, 2: In Transit, 3: Delivered
+  int _tripStatus = 0; 
   final TextEditingController _otpController = TextEditingController();
+  bool _isCompleting = false;
 
   void _updateStatus() {
     if (_tripStatus < 3) {
@@ -414,10 +429,33 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     }
   }
 
-  void _completeDelivery() {
+  void _completeDelivery() async {
     if (_otpController.text == '1234') {
-      Navigator.popUntil(context, (route) => route.isFirst);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delivery Successful! ₹372 added to wallet.'), backgroundColor: Colors.green));
+      setState(() => _isCompleting = true);
+      try {
+        // Fetch current stats
+        final driver = await Supabase.instance.client.from('drivers').select('total_earnings, completed_trips').eq('id', widget.driverId).single();
+        
+        double currentEarnings = (driver['total_earnings'] ?? 0).toDouble();
+        int currentTrips = (driver['completed_trips'] ?? 0);
+
+        // Update Database
+        await Supabase.instance.client.from('drivers').update({
+          'total_earnings': currentEarnings + 372,
+          'completed_trips': currentTrips + 1,
+        }).eq('id', widget.driverId);
+
+        if (mounted) {
+          Navigator.popUntil(context, (route) => route.isFirst); // Go back to dashboard
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delivery Successful! ₹372 added to wallet.'), backgroundColor: Colors.green));
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Database Error!'), backgroundColor: Colors.red));
+        }
+      } finally {
+        setState(() => _isCompleting = false);
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Galat OTP! Customer se poocho (Testing: 1234)'), backgroundColor: Colors.red));
     }
@@ -462,9 +500,11 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               ),
               const SizedBox(height: 15),
               ElevatedButton(
-                onPressed: _completeDelivery,
+                onPressed: _isCompleting ? null : _completeDelivery,
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, minimumSize: const Size(double.infinity, 60)),
-                child: const Text('Complete Delivery', style: TextStyle(fontSize: 18, color: Colors.white)),
+                child: _isCompleting 
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : const Text('Complete Delivery', style: TextStyle(fontSize: 18, color: Colors.white)),
               ),
             ]
           ],
@@ -482,8 +522,8 @@ class DriverTripsTab extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('My Trips'), backgroundColor: Colors.green, foregroundColor: Colors.white),
       body: const Center(child: Text('Abhi tak koi trip complete nahi ki.')),
-    );
-  }
+    ),
+  );
 }
 
 class DriverEarningsTab extends StatelessWidget {
@@ -521,14 +561,13 @@ class DriverProfileTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final driverInfo = driverData['drivers'][0];
-    
     return Scaffold(
       appBar: AppBar(title: const Text('Driver Profile'), backgroundColor: Colors.green, foregroundColor: Colors.white),
       body: ListView(
         children: [
           const SizedBox(height: 20),
           Center(
-                        child: Column(
+            child: Column(
               children: [
                 const CircleAvatar(radius: 50, child: Icon(Icons.person, size: 50)),
                 const SizedBox(height: 10),
@@ -545,5 +584,4 @@ class DriverProfileTab extends StatelessWidget {
       ),
     );
   }
-}
-         
+}  
