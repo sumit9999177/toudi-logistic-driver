@@ -153,15 +153,11 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
   void initState() {
     super.initState();
     _tabs = [
-      DriverDashboardTab(driverData: widget.driverData, onRefresh: _refreshData),
+      DriverDashboardTab(driverData: widget.driverData),
       const DriverTripsTab(),
       const DriverEarningsTab(),
       DriverProfileTab(driverData: widget.driverData),
     ];
-  }
-
-  void _refreshData() {
-    setState(() {}); // Refresh UI
   }
 
   @override
@@ -188,8 +184,7 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
 // ================= D-05 & D-06: DASHBOARD TAB =================
 class DriverDashboardTab extends StatefulWidget {
   final Map<String, dynamic> driverData;
-  final VoidCallback onRefresh;
-  const DriverDashboardTab({super.key, required this.driverData, required this.onRefresh});
+  const DriverDashboardTab({super.key, required this.driverData});
   @override
   State<DriverDashboardTab> createState() => _DriverDashboardTabState();
 }
@@ -297,7 +292,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
               ElevatedButton(
                 onPressed: () async {
                   await Navigator.push(context, MaterialPageRoute(builder: (context) => RideRequestScreen(driverId: _driverId)));
-                  // Jab trip complete hoke wapas aaye, toh dashboard refresh karo
+                  // Refresh dashboard after trip
                   final updatedDriver = await Supabase.instance.client.from('drivers').select().eq('id', _driverId).single();
                   setState(() {
                     _earnings = (updatedDriver['total_earnings'] ?? 0).toDouble();
@@ -433,20 +428,18 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     if (_otpController.text == '1234') {
       setState(() => _isCompleting = true);
       try {
-        // Fetch current stats
         final driver = await Supabase.instance.client.from('drivers').select('total_earnings, completed_trips').eq('id', widget.driverId).single();
         
         double currentEarnings = (driver['total_earnings'] ?? 0).toDouble();
         int currentTrips = (driver['completed_trips'] ?? 0);
 
-        // Update Database
         await Supabase.instance.client.from('drivers').update({
           'total_earnings': currentEarnings + 372,
           'completed_trips': currentTrips + 1,
         }).eq('id', widget.driverId);
 
         if (mounted) {
-          Navigator.popUntil(context, (route) => route.isFirst); // Go back to dashboard
+          Navigator.popUntil(context, (route) => route.isFirst); 
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delivery Successful! ₹372 added to wallet.'), backgroundColor: Colors.green));
         }
       } catch (e) {
@@ -522,8 +515,8 @@ class DriverTripsTab extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('My Trips'), backgroundColor: Colors.green, foregroundColor: Colors.white),
       body: const Center(child: Text('Abhi tak koi trip complete nahi ki.')),
-    ),
-  );
+    );
+  }
 }
 
 class DriverEarningsTab extends StatelessWidget {
@@ -584,4 +577,4 @@ class DriverProfileTab extends StatelessWidget {
       ),
     );
   }
-}  
+}
